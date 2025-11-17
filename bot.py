@@ -1,1 +1,232 @@
+# bot.py
+import os
+import asyncio
+import logging
+import google.generativeai as genai
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ChatAction
+)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters
+)
+
+# ---------- CONFIG ----------
+TELEGRAM_TOKEN = os.environ.get("8253275091:AAFFfNmtmBQEMIAExQr918r8ew91u77TS-A")
+GEMINI_API_KEY = os.environ.get("AIzaSyBCQrFQMGEZErvLv5F7fnc8bPPC9jMWXxc")
+
+# Replace this with your real group ID (must be integer, negative for supergroups)
+# e.g. ALLOWED_GROUP_ID = -1001234567890
+ALLOWED_GROUP_ID = int(os.environ.get("ALLOWED_GROUP_ID", "0"))
+
+# Bot display name (for messages)
+BOT_NAME = "SciU"
+
+# ---------- Logging ----------
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ---------- Gemini init ----------
+if not GEMINI_API_KEY or not TELEGRAM_TOKEN:
+    raise RuntimeError("Set TELEGRAM_TOKEN and GEMINI_API_KEY environment variables.")
+genai.configure(api_key=GEMINI_API_KEY)
+text_model = genai.GenerativeModel("gemini-pro")
+vision_model = genai.GenerativeModel("gemini-pro-vision")
+
+# ---------- Helpers ----------
+def main_menu():
+    keyboard = [
+        [InlineKeyboardButton("❓ ප්‍රශ්නය (short)", callback_data="ask_short"),
+         InlineKeyboardButton("🔢 Answer with step", callback_data="ask_step")],
+        [InlineKeyboardButton("📷 රූපය විශ්ලේෂණය", callback_data="photo")],
+        [InlineKeyboardButton("ℹ️ උපකාරය", callback_data="help")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def is_user_in_allowed_group(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """
+    Returns True if user_id is a member/administrator/creator of ALLOWED_GROUP_ID.
+    """
+    try:
+        if ALLOWED_GROUP_ID == 0:
+            return False
+        member = await context.bot.get_chat_member(chat_id=ALLOWED_GROUP_ID, user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logger.warning("Membership check failed: %s", e)
+        return False
+
+async def require_group_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Ensure the user is in the allowed group. If not, inform them with the join link.
+    Returns True if allowed (OK to continue), False if not.
+    """
+    # If message originates from group itself, allow (group use permitted)
+    if update.effective_chat and update.effective_chat.id == ALLOWED_GROUP_ID:
+        return True
+
+    user = update.effective_user
+    if not user:
+        return False
+
+    in_group = await is_user_in_allowed_group(context, user.id)
+    if not in_group:
+        # Provide user with message to join the group
+        join_msg = (
+            f"❗ SciU හැසිරවීමට පෙර ඔබ අපගේ official group එකට සාමාජික විය යුතුයි.\n\n"
+            f"👉 Group link: https://t.me/+YOUR_INVITE_LINK  \n\n"
+            "Group එකට එකතු වුණ පසු නැවත මේක run කරන්න. (හෝ group id replace කරලා local test කරන්න)"
+        )
+        await update.message.reply_text(join_msg)
+        return False
+    return True
+
+# ---------- Command Handlers ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # start allowed for both group and direct chat, but require membership for DM actions
+    text = (
+        f"👋 හෙලෝ! මම *{BOT_NAME}* — ඔබේ Sci/Tech උදව්කරුවා.\n\n"
+        "පහත බටන් වලින් ඔබට පහසු සේවා ලබාගත හැක.\n"
+        "• /q <ප්‍රශ්නය> — සාමාන්‍ය උත්තර\n"
+        "• /qstep <ප්‍රශ්නය> — පියවරෙන් පියවර උත්තර\n\n"
+        "Buttons හරහා අත්හදා බලන්න."
+    )
+    await update.message.reply_text(text, reply_markup=main_menu())
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()  # acknowledge the callback
+    data = query.data
+
+    if data == "ask_short":
+        await query.edit_message_text("❓ ප්‍රශ්නය `/q ඔබේ ප්‍රශ්නය` ලෙස ටයිප් කරන්න. (සිංහල හෝ English)")
+    elif data == "ask_step":
+        await query.edit_message_text("🔢 පියවරෙන් පියවර උත්තර ලබාගැනීමට `/qstep ඔබේ ප්‍රශ්නය` ලෙස අහන්න.")
+    elif data == "photo":
+        await query.edit_message_text("📷 රූපයක් පහලට ඇතුලත් කරන්න. මම Sinhalaෙන් විස්තරකරමි.")
+    elif data == "help":
+        await query.edit_message_text(
+            "🟦 HELP\n"
+            "/q <ප්‍රශ්නය> — සාමාන්‍ය උත්තර\n"
+            "/qstep <ප්‍රශ්නය> — පියවරෙන් පියවර උත්තර\n"
+            "Send a photo — analyze image\n\n"
+            "Note: Direct use (DM) requires you to be a member of the official group."
+        )
+
+# ---------- Q Handlers ----------
+async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # /q normal short answer
+    ok = await require_group_membership(update, context)
+    if not ok:
+        return
+
+    question = " ".join(context.args).strip()
+    if not question:
+        await update.message.reply_text("❗ `/q ඔබේ ප්‍රශ්නය` ලෙස අහන්න.")
+        return
+
+    await update.message.reply_text("⏳ පිළිතුර සකස් වෙමින්...")
+
+    try:
+        prompt = f"ඔබේ කාර්යය: පහත ප්‍රශ්නයට සාමාන්‍ය, සරල සිංහලෙන් උත්තර දෙන්න.\n\nප්‍රශ්නය: {question}"
+        resp = text_model.generate_content(prompt)
+        await update.message.reply_text(resp.text)
+    except Exception as e:
+        logger.exception("Gemini error:")
+        await update.message.reply_text("⚠️ Gemini API error. පසුව උත්සහ කරන්න.")
+
+async def qstep_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # /qstep answer with numbered steps
+    ok = await require_group_membership(update, context)
+    if not ok:
+        return
+
+    question = " ".join(context.args).strip()
+    if not question:
+        await update.message.reply_text("❗ `/qstep ඔබේ ප්‍රශ්නය` ලෙස අහන්න.")
+        return
+
+    await update.message.reply_text("⏳ පියවරෙන් පියවර පිළිතුර සකස් වෙමින්...")
+
+    try:
+        prompt = (
+            "ඔබේ කාර්යය: පහත ප්‍රශ්නයට සිංහලෙන් **පියවරෙන් පියවර (numbered steps)** අකාරයෙන් උත්තර දෙන්න. "
+            "වැඩි විස්තර සහ practical steps එකතු කරන්න.\n\n"
+            f"ප්‍රශ්නය: {question}"
+        )
+        resp = text_model.generate_content(prompt)
+        await update.message.reply_text(resp.text)
+    except Exception as e:
+        logger.exception("Gemini error:")
+        await update.message.reply_text("⚠️ Gemini API error. පසුව උත්සහ කරන්න.")
+
+# ---------- Text handler ----------
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # If message in group, only respond when bot is mentioned or command given
+    chat = update.effective_chat
+    text = update.message.text or ""
+    if chat.type != "private":
+        # only respond if /q or @SciU mentioned
+        if not text.startswith("/q") and f"@{context.bot.username}" not in text:
+            return
+
+    ok = await require_group_membership(update, context)
+    if not ok:
+        return
+
+    await update.message.reply_text("⏳ පිළිතුර සකස් වෙමින්...")
+    try:
+        prompt = f"User message: {text}\nReply in friendly Sinhala."
+        resp = text_model.generate_content(prompt)
+        await update.message.reply_text(resp.text)
+    except Exception:
+        await update.message.reply_text("⚠️ පිළිතුර ලබාගැනීමට ගැටලුවක් තිබේ.")
+
+# ---------- Photo handler ----------
+async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ok = await require_group_membership(update, context)
+    if not ok:
+        return
+
+    await update.message.reply_text("📷 රූපය විශ්ලේෂණය වෙමින්…")
+
+    photo = update.message.photo[-1]
+    file = await photo.get_file()
+    img_path = f"img_{update.message.message_id}.jpg"
+    await file.download_to_drive(img_path)
+
+    try:
+        # Tell user we're processing (Telegram "typing..." indicator)
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+
+        response = vision_model.generate_content([
+            "Explain this image in detailed, friendly Sinhala and list any important observations.",
+            genai.types.Part.from_file(img_path, mime_type="image/jpeg")
+        ])
+        await update.message.reply_text(response.text)
+    except Exception as e:
+        logger.exception("Vision error:")
+        await update.message.reply_text("⚠️ රූපය විශ්ලේෂණය කිරීමට නොහැකි විය.")
+    finally:
+        if os.path.exists(img_path):
+            os.remove(img_path)
+
+# ---------- Main ----------
+def main():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CommandHandler("q", q_handler))
+    app.add_handler(CommandHandler("qstep", qstep_handler))
+
+    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+
+    print("SciU bot is running...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
 
