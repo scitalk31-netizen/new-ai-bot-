@@ -18,7 +18,7 @@ GEMINI_API_KEY = os.environ.get("AIzaSyBCQrFQMGEZErvLv5F7fnc8bPPC9jMWXxc")
 
 # Replace this with your real group ID (must be integer, negative for supergroups)
 # e.g. ALLOWED_GROUP_ID = -1001234567890
-ALLOWED_GROUP_ID = int(os.environ.get("ALLOWED_GROUP_ID", "0"))
+ALLOWED_GROUP_ID = int(os.environ.get("-1002628845430", "0"))
 
 # Bot display name (for messages)
 BOT_NAME = "SciU"
