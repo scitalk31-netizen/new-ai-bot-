@@ -75,7 +75,7 @@ async def require_group_membership(update: Update, context: ContextTypes.DEFAULT
         # Provide user with message to join the group
         join_msg = (
             f"❗ SciU හැසිරවීමට පෙර ඔබ අපගේ official group එකට සාමාජික විය යුතුයි.\n\n"
-            f"👉 Group link: https://t.me/+YOUR_INVITE_LINK  \n\n"
+            f"👉 Group link: https://t.me/pesurubooks01  \n\n"
             "Group එකට එකතු වුණ පසු නැවත මේක run කරන්න. (හෝ group id replace කරලා local test කරන්න)"
         )
         await update.message.reply_text(join_msg)
