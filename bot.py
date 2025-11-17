@@ -1,6 +1,5 @@
 # bot.py
 import os
-import asyncio
 import logging
 import google.generativeai as genai
 from telegram import (
@@ -12,7 +11,9 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 
-# ---------- CONFIG ----------
+# =======================
+# CONFIG (Your values added)
+# =======================
 TELEGRAM_TOKEN = "8253275091:AAFFfNmtmBQEMIAExQr918r8ew91u77TS-A"
 GEMINI_API_KEY = "AIzaSyBCQrFQMGEZErvLv5F7fnc8bPPC9jMWXxc"
 ALLOWED_GROUP_ID = -1002628845430
@@ -22,12 +23,19 @@ BOT_NAME = "SciU"
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- Gemini init ----------
+# =======================
+# GEMINI INIT
+# =======================
 genai.configure(api_key=GEMINI_API_KEY)
 text_model = genai.GenerativeModel("gemini-pro")
 vision_model = genai.GenerativeModel("gemini-pro-vision")
 
-# ---------- UI: Main Menu Buttons ----------
+# Memory for verified joined users
+verified_users = set()
+
+# =======================
+# MAIN MENU UI
+# =======================
 def main_menu():
     keyboard = [
         [
@@ -39,169 +47,228 @@ def main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ---------- GROUP CHECK ----------
-async def is_user_in_allowed_group(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+# =======================
+# GROUP JOIN CHECK
+# =======================
+async def check_group_membership(context, user_id: int) -> bool:
     try:
         member = await context.bot.get_chat_member(ALLOWED_GROUP_ID, user_id)
         return member.status in ("member", "administrator", "creator")
-    except Exception:
+    except:
         return False
 
-async def require_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+async def require_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user = update.effective_user
+
     if not user:
         return False
 
-    joined = await is_user_in_allowed_group(context, user.id)
+    # If previously verified -> allow
+    if user.id in verified_users:
+        return True
 
-    if not joined:
-        msg = (
-            "❌ *ඔබ SciU Official Group එකට join වී නෑ!*\n\n"
-            "Bot එක භාවිතා කරන්න එතනට join වෙන්න.\n\n"
-            f"👉 Group link: {GROUP_LINK}\n\n"
-            "Join වූ පසු `/start` යලි type කරන්න."
+    # If user already in group -> verify now
+    already_in = await check_group_membership(context, user.id)
+    if already_in:
+        verified_users.add(user.id)
+        return True
+
+    # Ask user to join + forward a message
+    await update.message.reply_text(
+        f"❌ ඔබ *{BOT_NAME}* DM භාවිතා කිරීමට පෙර group එක join විය යුතුයි.\n\n"
+        f"👉 Group link: {GROUP_LINK}\n\n"
+        "Join උනාම: \n"
+        "➡️ *Group එකෙන් 'Hi' කියලා msg එකක් 보내න්න*\n"
+        "➡️ එම msg එක DM එකට forward කරන්න\n\n"
+        "Forward කළ ගමන් access ලබාදිමි ❤️",
+        parse_mode="Markdown"
+    )
+    return False
+
+# =======================
+# FORWARDED MESSAGE VERIFY
+# =======================
+async def forward_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.forward_from_chat:
+        return
+
+    # Check if forwarded from correct group
+    if update.message.forward_from_chat.id == ALLOWED_GROUP_ID:
+        user = update.effective_user
+        verified_users.add(user.id)
+
+        await update.message.reply_text(
+            "✅ ඔබ group එක join වී ඇති බව සනාථ කරන ලදී!\n"
+            "දැන් Bot එක ඔබට සම්පූර්ණයෙන්ම ලබාගත හැක.\n\n"
+            "👉 `/start` යලි type කරන්න ❤️"
         )
-        await update.message.reply_text(msg, parse_mode="Markdown")
-        return False
-    return True
 
-# ---------- /start ----------
+# =======================
+# /start
+# =======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        f"👋 හෙලෝ! මම *{BOT_NAME}* — ඔබේ විද්‍යා / තාක්ෂණ AI උපකාරකයා.\n\n"
+    await update.message.reply_text(
+        f"👋 හෙලෝ! මම *{BOT_NAME}* — ඔබේ A/L Science AI Tutor.\n\n"
         "ඔබට මෙහෙම යොදාගන්න පුළුවන්:\n"
         "• `/q <ප්‍රශ්නය>` — සාමාන්‍ය පිළිතුර\n"
-        "• `/qstep <ප්‍රශ්නය>` — පියවරෙන් පියවර පිළිතුර\n"
-        "• Photo යවන්න — AI Image Analyze\n\n"
-        "👇 පහත menu එකෙන් service එකක් තෝරන්න"
+        "• `/qstep <ප්‍රශ්නය>` — පියවරෙන් පියවර A/L style\n"
+        "• Photo — AI Image Analyze (Diagrams / Experiments)\n\n"
+        "👇 පහතින් service එකක් තෝරන්න",
+        reply_markup=main_menu(),
+        parse_mode="Markdown"
     )
-    await update.message.reply_text(text, reply_markup=main_menu(), parse_mode="Markdown")
 
-# ---------- BUTTON HANDLER ----------
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    cmd = query.data
+# =======================
+# BUTTON HANDLER
+# =======================
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    cmd = q.data
 
     if cmd == "ask_short":
-        await query.edit_message_text("❓ `/q ඔබේ ප්‍රශ්නය` ලෙස අහන්න.")
+        await q.edit_message_text("❓ `/q <your question>` ලෙස අහන්න.")
     elif cmd == "ask_step":
-        await query.edit_message_text("🔢 `/qstep ඔබේ ප්‍රශ්නය` ලෙස අහන්න (numbered steps).")
+        await q.edit_message_text("🔢 `/qstep <your question>` ලෙස අහන්න.")
     elif cmd == "photo":
-        await query.edit_message_text("📷 Analyze කරන්න image එකක් යොමු කරන්න.")
+        await q.edit_message_text("📷 Analyze කිරීමට image එකක් යොමුකරන්න.")
     elif cmd == "help":
-        await query.edit_message_text(
-            f"🟦 HELP GUIDE\n"
-            "• /q <text> — සාමාන්‍ය answer\n"
-            "• /qstep <text> — Step-by-step answer\n"
-            "• Send a photo — image analysis\n\n"
-            f"⚠️ Direct use සඳහා group join වීම අවශ්‍යයි: {GROUP_LINK}"
+        await q.edit_message_text(
+            f"🟦 HELP MENU\n"
+            "• /q — Normal Answer\n"
+            "• /qstep — Step-by-step A/L mode\n"
+            "• Send a photo — Analyze\n\n"
+            f"⚠️ Group join link: {GROUP_LINK}"
         )
 
-# ---------- /q ----------
+# =======================
+# A/L Friendly Prompt Builder
+# =======================
+def build_AL_prompt(question):
+    return (
+        "You are an expert Sri Lankan A/L science teacher. "
+        "Explain everything clearly in simple Sinhala. "
+        "Always include:\n"
+        "1. Basic idea\n"
+        "2. Theory\n"
+        "3. A/L syllabus relevance\n"
+        "4. Examples\n"
+        "5. Short summary\n\n"
+        f"Question: {question}"
+    )
+
+# =======================
+# /q (Normal Answer)
+# =======================
 async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_group(update, context):
+    if not await require_join(update, context):
         return
 
     question = " ".join(context.args)
     if not question:
-        await update.message.reply_text("❗ `/q <text>` ලෙස අහන්න.")
-        return
+        return await update.message.reply_text("❗ `/q <question>` ලෙස අහන්න.")
 
     await update.message.reply_text("⏳ සකස් වෙමින්...")
 
     try:
-        prompt = (
-            "පහත ප්‍රශ්නයට සරල, පැහැදිලි සිංහලෙන් පිළිතුර ලබාදෙන්න.\n\n"
-            f"ප්‍රශ්නය: {question}"
-        )
-        resp = text_model.generate_content(prompt)
+        resp = text_model.generate_content(build_AL_prompt(question))
         await update.message.reply_text(resp.text)
     except:
-        await update.message.reply_text("⚠️ Gemini API error!")
+        await update.message.reply_text("⚠️ AI error!")
 
-# ---------- /qstep ----------
+# =======================
+# /qstep (Step-by-step)
+# =======================
 async def qstep_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_group(update, context):
+    if not await require_join(update, context):
         return
 
     question = " ".join(context.args)
     if not question:
-        await update.message.reply_text("❗ `/qstep <text>` ලෙස අහන්න.")
-        return
+        return await update.message.reply_text("❗ `/qstep <question>` ලෙස අහන්න.")
 
-    await update.message.reply_text("⏳ Step-by-step සකස් වෙමින්...")
+    await update.message.reply_text("⏳ Step-by-step answer සකස් වෙමින්...")
 
     try:
         prompt = (
-            "පහත ප්‍රශ්නයට **පියවරෙන් පියවර (numbered)** සිංහලෙන් පිළිතුර දෙන්න.\n\n"
-            f"ප්‍රශ්නය: {question}"
+            "Sri Lankan A/L teacher mode: give answer in **clear numbered steps**.\n\n"
+            + build_AL_prompt(question)
         )
         resp = text_model.generate_content(prompt)
         await update.message.reply_text(resp.text)
     except:
-        await update.message.reply_text("⚠️ Gemini API error!")
+        await update.message.reply_text("⚠️ AI error!")
 
-# ---------- IMAGE ANALYZE ----------
-async def photo_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await require_group(update, context):
+# =======================
+# IMAGE ANALYZE
+# =======================
+async def photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_join(update, context):
         return
 
-    await update.message.reply_text("📷 රූපය විශ්ලේෂණය වෙමින්…")
+    await update.message.reply_text("📷 Image analyze වෙමින්...")
 
     photo = update.message.photo[-1]
     file = await photo.get_file()
-
-    img = f"img_{update.message.message_id}.jpg"
-    await file.download_to_drive(img)
+    img_path = f"img_{update.message.message_id}.jpg"
+    await file.download_to_drive(img_path)
 
     try:
         await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
 
-        response = vision_model.generate_content([
-            "Explain this image in friendly, clear Sinhala.",
-            genai.types.Part.from_file(img, mime_type="image/jpeg")
+        prompt = (
+            "You are an A/L science teacher.\n"
+            "Analyze this image in simple Sinhala.\n"
+            "Explain:\n"
+            "1. What it shows\n"
+            "2. The scientific theory\n"
+            "3. A/L syllabus relevance\n"
+            "4. Key points\n"
+        )
+
+        resp = vision_model.generate_content([
+            prompt,
+            genai.types.Part.from_file(img_path, mime_type="image/jpeg")
         ])
 
-        await update.message.reply_text(response.text)
+        await update.message.reply_text(resp.text)
     except:
         await update.message.reply_text("⚠️ Image Analyze error!")
     finally:
-        if os.path.exists(img):
-            os.remove(img)
+        if os.path.exists(img_path):
+            os.remove(img_path)
 
-# ---------- PRIVATE TEXT HANDLER ----------
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ""
-
-    # Ignore normal chat unless DM or @mention
-    if update.effective_chat.type != "private" and f"@{context.bot.username}" not in text:
+# =======================
+# PRIVATE CHAT MESSAGES
+# =======================
+async def private_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await require_join(update, context):
         return
 
-    if not await require_group(update, context):
-        return
+    txt = update.message.text
 
     await update.message.reply_text("⏳ සකස් වෙමින්...")
-
     try:
-        prompt = f"User message: {text}\nReply in natural Sinhala."
-        resp = text_model.generate_content(prompt)
+        resp = text_model.generate_content(build_AL_prompt(txt))
         await update.message.reply_text(resp.text)
     except:
         await update.message.reply_text("⚠️ Error!")
 
-# ---------- MAIN ----------
+# =======================
+# MAIN
+# =======================
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(MessageHandler(filters.FORWARDED, forward_verify))
     app.add_handler(CommandHandler("q", q_handler))
     app.add_handler(CommandHandler("qstep", qstep_handler))
-    app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_handler(MessageHandler(filters.PHOTO, photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, private_text))
 
-    print(f"{BOT_NAME} is running…")
+    print(f"{BOT_NAME} Running…")
     app.run_polling()
 
 if __name__ == "__main__":
